@@ -14,11 +14,19 @@ const MOCK_DATASETS = [
   {
     name: 'sample_dataset.csv',
     file_type: 'csv',
+    storage_type: 'file',
     size: 1024,
     rows: 100,
     columns: 5,
     modified: new Date().toISOString(),
-    updated_at: new Date().toISOString()
+    updated_at: new Date().toISOString(),
+    metadata: {
+      storage_info: {
+        primary: 'file',
+        fallback: 'db2'
+      },
+      cache_status: 'active'
+    }
   }
 ];
 
@@ -71,13 +79,17 @@ export const uploadDataset = async (file, datasetName = null, fileType = null) =
   }
 };
 
-export const cleanDataset = async (datasetName, options = {}, storageType = 'file', version = null, saveResult = true, resultName = null) => {
+export const cleanDataset = async (datasetName, options = {}, storageType = 'hybrid', version = null, saveResult = true, resultName = null) => {
   try {
     const payload = {
       dataset_name: datasetName,
       options,
       storage_type: storageType,
-      save_result: saveResult
+      save_result: saveResult,
+      storage_config: {
+        primary: storageType,
+        fallback: storageType === 'file' ? 'db2' : 'file'
+      }
     };
     
     if (version) payload.version = version;
@@ -91,15 +103,17 @@ export const cleanDataset = async (datasetName, options = {}, storageType = 'fil
   }
 };
 
-export const listDatasets = async (storageType = 'all') => {
+export const listDatasets = async (storageType = 'all', useCache = true) => {
   try {
     const response = await axios.get('/data/datasets', {
-      params: { storage_type: storageType }
+      params: { 
+        storage_type: storageType,
+        use_cache: useCache 
+      }
     });
     return response.data;
   } catch (error) {
     console.error('Error listing datasets:', error.message);
-    // Return mock data if API is unavailable
     return {
       success: true,
       datasets: MOCK_DATASETS

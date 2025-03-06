@@ -1,0 +1,16 @@
+product_id,product_name,category,price,stock,rating
+1.5,iphone 13 pro!@#,electronics,999.999,50.5,4.85
+2.0,samsung galaxy s21,electronics,899.99,30.0,4.7
+2.0,samsung galaxy s21,electronics,899.99,35.0,4.7
+3.0,"macbook pro 16""",electronics,1276.7784285714292,20.0,4.5
+4.0,dell xps 13,electronics,1299.99,85409.2693076923,4.600001
+5.0,nike air max,shoes,129.999,100.0,4.5
+6.0,nike air max,shoes,12999.99,100000.0,4.5
+7.0,levi's 501,clothing,59.99,0.0,0.5
+8.0,adidas ultra boost,shoes,179.99,0.001,4.5
+9.0,nike air max,invalid-category,89.99,25.0,3.9
+10.0,under armour shirt,clothing,29.99,9999.0,4.2
+11.0,puma running shoes,shoes,119.99,50.0,3.932142928571429
+12.0,new balance 990,shoes,174.99,15.0,4.5
+6.678571428571429,missing product,unknown,0.0,85409.2693076923,2.5
+13.0,product with @ special # characters,books,-10.0,1000001.0,4.5

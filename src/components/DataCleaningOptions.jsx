@@ -8,6 +8,8 @@ const DataCleaningOptions = ({ onApplyOptions, initialOptions, disabled }) => {
     normalizeText: initialOptions?.normalizeText ?? true,
     detectOutliers: initialOptions?.detectOutliers ?? true,
     fixTypos: initialOptions?.fixTypos ?? false,
+    storageType: initialOptions?.storageType ?? 'hybrid',
+    useCache: initialOptions?.useCache ?? true,
     ...initialOptions
   });
 
@@ -105,6 +107,37 @@ const DataCleaningOptions = ({ onApplyOptions, initialOptions, disabled }) => {
             <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
               Hugging Face
             </span>
+          </label>
+        </div>
+
+        <div>
+          <label htmlFor="storageType" className="block text-sm text-gray-700 mb-1">
+            Storage Type
+          </label>
+          <select
+            id="storageType"
+            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+            value={options.storageType}
+            onChange={(e) => handleOptionChange('storageType', e.target.value)}
+            disabled={disabled}
+          >
+            <option value="hybrid">Hybrid (File + DB2)</option>
+            <option value="file">File-based only</option>
+            <option value="db2">DB2 only</option>
+          </select>
+        </div>
+
+        <div className="flex items-center">
+          <input
+            id="useCache"
+            type="checkbox"
+            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+            checked={options.useCache}
+            onChange={(e) => handleOptionChange('useCache', e.target.checked)}
+            disabled={disabled}
+          />
+          <label htmlFor="useCache" className="ml-2 block text-sm text-gray-700">
+            Use Redis cache for faster operations
           </label>
         </div>
         

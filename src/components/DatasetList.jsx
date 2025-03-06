@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Database, FileText, Trash2, Download, ExternalLink, RefreshCw } from 'lucide-react';
+import { Database, FileText, Trash2, Download, ExternalLink, RefreshCw, HardDrive, Cloud } from 'lucide-react';
 import { listDatasets, deleteDataset, downloadDataset } from '../services/dataService';
 
 const DatasetList = ({ onSelectDataset, refreshTrigger }) => {
@@ -93,6 +93,40 @@ const DatasetList = ({ onSelectDataset, refreshTrigger }) => {
     }
   };
 
+  const getStorageIcon = (storageType, metadata) => {
+    switch (storageType) {
+      case 'hybrid':
+        return (
+          <div className="flex items-center" title="Hybrid Storage (File + DB2)">
+            <FileText className="h-4 w-4 text-purple-500" />
+            <Database className="h-4 w-4 text-purple-500 -ml-1" />
+          </div>
+        );
+      case 'db2':
+        return <Database className="h-4 w-4 text-blue-500" title="DB2 Storage" />;
+      case 'file':
+        return <HardDrive className="h-4 w-4 text-green-500" title="File Storage" />;
+      default:
+        return <Database className="h-4 w-4 text-gray-500" title="Unknown Storage Type" />;
+    }
+  };
+
+  const getCacheStatus = (metadata) => {
+    if (!metadata?.cache_status) return null;
+    
+    return (
+      <span 
+        className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+          metadata.cache_status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+        }`}
+        title={`Cache Status: ${metadata.cache_status}`}
+      >
+        <Cloud className="h-3 w-3 mr-1" />
+        {metadata.cache_status === 'active' ? 'Cached' : 'Not Cached'}
+      </span>
+    );
+  };
+
   if (isLoading && datasets.length === 0) {
     return (
       <div className="bg-white rounded-lg shadow-sm p-6">
@@ -155,7 +189,11 @@ const DatasetList = ({ onSelectDataset, refreshTrigger }) => {
                       {getFileIcon(dataset.file_type)}
                     </div>
                     <div className="ml-3 flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">{dataset.name}</p>
+                      <div className="flex items-center space-x-2">
+                        <p className="text-sm font-medium text-gray-900 truncate">{dataset.name}</p>
+                        {getStorageIcon(dataset.storage_type, dataset.metadata)}
+                        {getCacheStatus(dataset.metadata)}
+                      </div>
                       <div className="flex items-center text-xs text-gray-500">
                         <span className="truncate">
                           {dataset.rows} rows • {dataset.columns} columns • {dataset.file_type}
