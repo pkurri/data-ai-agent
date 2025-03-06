@@ -1,0 +1,50 @@
+app:
+  name: Data Processing Service
+  version: 1.0.0
+  debug: true
+
+api:
+  host: 0.0.0.0
+  port: 5000
+  prefix: /api
+
+storage:
+  upload_folder: uploads
+  max_file_size: 16777216  # 16MB in bytes
+  allowed_extensions:
+    - csv
+    - xlsx
+    - xls
+    - json
+    - txt
+
+database:
+  url: sqlite:///storage/data.db
+  pool_size: 5
+  max_overflow: 10
+
+logging:
+  level: INFO
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  file: logs/app.log
+
+agents:
+  ingestion:
+    batch_size: 1000
+    timeout: 300
+  cleaning:
+    strategies:
+      - remove_duplicates
+      - handle_missing_values
+      - normalize_text
+      - detect_outliers
+    outlier_threshold: 3
+  validation:
+    schema_folder: schemas
+    strict_mode: true
+  anomaly:
+    detection_method: isolation_forest
+    contamination: 0.1
+  storage:
+    compression: true
+    backup_enabled: true
