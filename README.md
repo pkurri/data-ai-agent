@@ -1,100 +1,188 @@
-# Data Cleaning Agent
+# Data AI Agent
 
-A comprehensive data cleaning solution with a React frontend and Python backend, leveraging Hugging Face models for advanced data processing.
+A powerful data analysis and cleaning platform with real-time chat analytics capabilities.
 
 ## Features
 
-- Modern React UI with a Facebook-like interface
-- Data cleaning and processing capabilities
-- Integration with Hugging Face models
-- File upload and processing
-- Data visualization and export
-- User settings and preferences
+### 1. Data Storage & Management
+- **Hybrid Storage System**
+  - File-based storage (Parquet)
+  - DB2 database integration
+  - SQL Server support
+  - Automatic failover between storage types
+  - Redis caching for improved performance
 
-## Tech Stack
+### 2. Data Cleaning
+- **Text Normalization**
+  - Case standardization
+  - Extra space removal
+  - Format standardization
 
-### Frontend
-- React 18
-- TypeScript
-- Tailwind CSS
-- React Router
-- React Query
-- Zustand (state management)
-- Lucide React (icons)
-- React Dropzone (file uploads)
+- **Data Quality**
+  - Missing value handling with smart imputation
+  - Outlier detection using IQR method
+  - Duplicate entry management
+  - Configurable cleaning rules
 
-### Backend
-- Python
-- Flask
-- Pandas
-- NumPy
-- scikit-learn
-- Hugging Face Inference API
+### 3. Real-time Chat Analytics
+- Natural language querying of datasets
+- Interactive data visualization
+- Query history tracking
+- Suggested questions based on dataset context
+- Near real-time response with caching
 
-## Getting Started
+### 4. Anomaly Detection
+- Statistical outlier detection
+- Distribution analysis
+- Time series anomaly detection
+- Configurable thresholds
+- Result caching for performance
 
-### Prerequisites
-- Node.js (v18+)
-- Python (v3.9+)
-- npm or yarn
+## Prerequisites
 
-### Installation
+- Python 3.8+
+- Node.js 16+
+- DB2 Database
+- SQL Server
+- Redis Server
 
-1. Clone the repository
+## Dependencies
+
+### Backend (Python)
 ```bash
-git clone https://github.com/yourusername/data-cleaning-agent.git
-cd data-cleaning-agent
+ibm-db==3.1.5
+ibm-db-sa==0.4.0
+redis==5.0.1
+Flask==2.3.3
+Flask-CORS==4.0.0
+pandas==2.2.3
+scikit-learn==1.6.1
 ```
 
-2. Install frontend dependencies
+### Frontend (Node.js)
 ```bash
-npm install
+react
+axios
+recharts
+lucide-react
+tailwindcss
 ```
 
-3. Install backend dependencies
-```bash
-cd server
-pip install -r requirements.txt
+## Setup Instructions
+
+1. **Clone the Repository**
+   ```bash
+   git clone <repository-url>
+   cd data-ai-agent
+   ```
+
+2. **Set Up Python Environment**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+
+3. **Configure Databases**
+   - Copy `config/database_config.example.py` to `config/database_config.py`
+   - Update the configuration with your database credentials:
+     ```python
+     DB2Config:
+       host: your_db2_host
+       port: your_db2_port
+       database: your_db2_database
+       username: your_username
+       password: your_password
+
+     SQLServerConfig:
+       server: your_sql_server
+       database: your_database
+       username: your_username
+       password: your_password
+
+     RedisConfig:
+       host: your_redis_host
+       port: your_redis_port
+       password: your_redis_password
+     ```
+
+4. **Install Frontend Dependencies**
+   ```bash
+   cd frontend
+   npm install
+   ```
+
+5. **Start the Application**
+   
+   Backend:
+   ```bash
+   cd server
+   python app.py
+   ```
+
+   Frontend:
+   ```bash
+   cd frontend
+   npm start
+   ```
+
+   The application will be available at `http://localhost:3000`
+
+## Usage Examples
+
+### 1. Data Cleaning
+```python
+from agents.cleaning_agent import DataCleaningAgent
+
+cleaner = DataCleaningAgent()
+cleaned_data = cleaner.clean_dataset('employee_data.csv', {
+    'removeDuplicates': True,
+    'handleMissingValues': 'impute',
+    'normalizeText': True,
+    'detectOutliers': True
+})
 ```
 
-### Running the Application
+### 2. Chat Analytics
+```javascript
+// In your React component
+import { DatasetChat } from './components/DatasetChat';
 
-1. Start the frontend development server
-```bash
-npm run dev
+function App() {
+  return (
+    <DatasetChat datasetName="employee_data" />
+  );
+}
 ```
 
-2. Start the backend server (in a separate terminal)
-```bash
-cd server
-python app.py
+Example questions you can ask:
+- "How many employees are currently active?"
+- "Show me department-wise employee count"
+- "What is the average salary by department?"
+
+### 3. Anomaly Detection
+```python
+from agents.anomaly_agent import AnomalyDetectionAgent
+
+detector = AnomalyDetectionAgent({
+    'numeric_columns': ['age', 'salary'],
+    'date_columns': ['hire_date'],
+    'anomaly_thresholds': {
+        'age_zscore': 3.0,
+        'salary_zscore': 3.0
+    }
+})
+
+anomalies = detector.detect_anomalies(data)
 ```
 
-3. Open your browser and navigate to `http://localhost:5173`
+## Contributing
 
-## Project Structure
-
-```
-data-cleaning-agent/
-├── public/                  # Static assets
-├── server/                  # Python backend
-│   ├── app.py               # Flask application
-│   └── requirements.txt     # Python dependencies
-├── src/
-│   ├── components/          # Reusable UI components
-│   ├── hooks/               # Custom React hooks
-│   ├── pages/               # Application pages
-│   ├── store/               # State management
-│   ├── App.tsx              # Main application component
-│   └── main.tsx             # Application entry point
-├── package.json             # Frontend dependencies
-└── README.md                # Project documentation
-```
-
-## API Endpoints
-
-- `GET /api/health` - Health check endpoint
-- `POST /api/clean` - Data cleaning endpoint
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License
 

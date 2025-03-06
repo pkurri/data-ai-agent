@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { RefreshCw, Download, FileText, AlertCircle } from 'lucide-react';
+import { RefreshCw, Download, FileText, AlertCircle, Database, HardDrive, Cloud } from 'lucide-react';
 import { previewDataset, downloadDataset } from '../services/dataService';
 
 const DataPreview = ({ dataset, refreshTrigger }) => {
@@ -7,6 +7,7 @@ const DataPreview = ({ dataset, refreshTrigger }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [previewRows, setPreviewRows] = useState(10);
+  const [useCache, setUseCache] = useState(true);
 
   useEffect(() => {
     if (dataset) {
@@ -14,7 +15,7 @@ const DataPreview = ({ dataset, refreshTrigger }) => {
     } else {
       setPreview(null);
     }
-  }, [dataset, refreshTrigger]);
+  }, [dataset, refreshTrigger, previewRows, useCache]);
 
   const fetchPreview = async () => {
     if (!dataset) return;
@@ -23,7 +24,13 @@ const DataPreview = ({ dataset, refreshTrigger }) => {
     setError(null);
     
     try {
-      const response = await previewDataset(dataset.name, dataset.storage_type, null, previewRows);
+      const response = await previewDataset(
+        dataset.name, 
+        dataset.storage_type, 
+        null, 
+        previewRows,
+        useCache
+      );
       if (response.success) {
         setPreview(response);
       } else {
@@ -73,7 +80,40 @@ const DataPreview = ({ dataset, refreshTrigger }) => {
   return (
     <div className="bg-white rounded-lg shadow-sm p-6">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-gray-900">Data Preview: {dataset.name}</h2>
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">Data Preview: {dataset.name}</h2>
+          <div className="flex items-center mt-1 space-x-2">
+            <div className="flex items-center text-sm text-gray-500">
+              {dataset.storage_type === 'hybrid' ? (
+                <div className="flex items-center" title="Hybrid Storage (File + DB2)">
+                  <FileText className="h-4 w-4 text-purple-500" />
+                  <Database className="h-4 w-4 text-purple-500 -ml-1 mr-1" />
+                  <span>Hybrid Storage</span>
+                </div>
+              ) : dataset.storage_type === 'db2' ? (
+                <div className="flex items-center" title="DB2 Storage">
+                  <Database className="h-4 w-4 text-blue-500 mr-1" />
+                  <span>DB2 Storage</span>
+                </div>
+              ) : (
+                <div className="flex items-center" title="File Storage">
+                  <HardDrive className="h-4 w-4 text-green-500 mr-1" />
+                  <span>File Storage</span>
+                </div>
+              )}
+            </div>
+            {dataset.metadata?.cache_status && (
+              <span 
+                className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                  dataset.metadata.cache_status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+                }`}
+              >
+                <Cloud className="h-3 w-3 mr-1" />
+                {dataset.metadata.cache_status === 'active' ? 'Cached' : 'Not Cached'}
+              </span>
+            )}
+          </div>
+        </div>
         <div className="flex items-center space-x-2">
           <div className="flex items-center">
             <label htmlFor="previewRows" className="mr-2 text-sm text-gray-600">
@@ -91,6 +131,18 @@ const DataPreview = ({ dataset, refreshTrigger }) => {
               <option value={20}>20</option>
               <option value={50}>50</option>
             </select>
+          </div>
+          <div className="flex items-center">
+            <label className="inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                checked={useCache}
+                onChange={(e) => setUseCache(e.target.checked)}
+                disabled={isLoading}
+              />
+              <span className="ml-2 text-sm text-gray-600">Use Cache</span>
+            </label>
           </div>
           <button
             onClick={handleRefresh}

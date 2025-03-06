@@ -1,0 +1,10 @@
+id,name,age,salary,department
+1.0,john doe,43.625,75000.0,engineering
+2.0,jane smith,28.0,65000.0,marketing
+3.0,bob johnson,42.0,85000.0,engineering
+5.0,alice brown,31.0,75000.0,sales
+6.0,charlie wilson,39.0,201714.14285714287,marketing
+7.0,alice brown,35.0,70000.0,sales
+8.0,dave miller,35.0,201714.14285714287,engineering
+9.0,eve jones,29.0,45000.0,marketing
+10.0,frank white,35.0,72000.0,engineering
