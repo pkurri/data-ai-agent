@@ -3,30 +3,32 @@ from flask_cors import CORS
 import pandas as pd
 import numpy as np
 from sklearn.impute import SimpleImputer
-import re
-import json
 import os
-from io import BytesIO
+from pathlib import Path
 from werkzeug.utils import secure_filename
-from services.data_source import DataSource
-from config.database import get_db
-from validation.service import ValidationService
-from validation.rules import EMPLOYEE_SCHEMA, PRODUCT_SCHEMA
-from sqlalchemy import inspect
-from api.endpoints.chat import chat_bp
-from config.database_config import DB2Config, SQLServerConfig, RedisConfig
-from adapters.db_adapter import DB2Adapter
-from adapters.sql_server_adapter import SQLServerAdapter
-from adapters.redis_adapter import RedisAdapter
 from utils.logging import get_logger
+from datetime import datetime
+import json
 
 logger = get_logger(__name__)
 
-app = Flask(__name__)
-CORS(app)
+class NumpyJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64,
+                          np.uint8, np.uint16, np.uint32, np.uint64)):
+            return int(obj)
+        elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
-# Configure upload folder
-UPLOAD_FOLDER = 'uploads'
+app = Flask(__name__)
+app.json_encoder = NumpyJSONEncoder
+CORS(app, origins=["http://localhost:5175"], supports_credentials=True)
+
+# Configure upload folder using absolute path
+UPLOAD_FOLDER = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'uploads'))
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
@@ -35,342 +37,500 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 ALLOWED_EXTENSIONS = {'csv', 'xlsx', 'xls', 'json', 'txt'}
 
-# Initialize services
-data_source = DataSource()
-validation_service = ValidationService()
-
-# Register default SQLite database
-data_source.register_database('default', "sqlite:///./data.db")
-validation_service.register_database('default', data_source.db_connections['default'])
-
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "healthy", "message": "Data cleaning API is running"})
-
-@app.route('/api/datasets', methods=['POST'])
+@app.route('/datasets', methods=['POST'])
 def upload_file():
     """Upload a new dataset."""
     try:
         if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
+            return jsonify({'success': False, 'error': 'No file provided'}), 400
         
         file = request.files['file']
         if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
+            return jsonify({'success': False, 'error': 'No file selected'}), 400
         
         if not allowed_file(file.filename):
-            return jsonify({'error': 'File type not allowed'}), 400
+            return jsonify({'success': False, 'error': 'File type not allowed. Supported formats: CSV, Excel, JSON, TXT'}), 400
             
-        filename = secure_filename(file.filename)
+        original_name = secure_filename(file.filename)
+        name, ext = os.path.splitext(original_name)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"{name}_{timestamp}{ext}"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
         
-        # Read the file and validate
-        df = data_source.read_data('file', path=filepath)
+        # Ensure upload directory exists
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
         
-        # Determine schema based on file content
-        schema_name = 'employees' if 'employee_id' in df.columns else 'products'
-        validation_errors = validation_service.validate_dataframe(df, schema_name)
+        try:
+            file.save(filepath)
+            logger.info(f"File saved successfully: {filepath}")
+        except Exception as e:
+            logger.error(f"Error saving file: {str(e)}")
+            return jsonify({'success': False, 'error': 'Failed to save file'}), 500
         
-        if validation_errors:
-            os.remove(filepath)  # Remove invalid file
-            return jsonify({
-                'error': 'Validation failed',
-                'validation_errors': validation_errors
-            }), 400
-        
-        return jsonify({
-            'message': 'File uploaded successfully',
-            'filename': filename,
-            'rows': len(df),
-            'columns': list(df.columns)
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/clean', methods=['POST'])
-def clean_data():
-    """Clean data from various sources (files or database tables)."""
-    try:
-        data = request.get_json()
-        source_type = data.get('source_type', 'file')
-        source_params = data.get('source_params', {})
-        cleaning_operations = data.get('cleaning_operations', [])
-        validation_schema = data.get('validation_schema')
-        
-        # Read data from source
-        df = data_source.read_data(source_type, **source_params)
-        
-        # Validate data if schema provided
-        if validation_schema:
-            validation_errors = validation_service.validate_dataframe(df, validation_schema)
-            if validation_errors:
-                return jsonify({
-                    'error': 'Validation failed',
-                    'validation_errors': validation_errors
-                }), 400
-        
-        # Apply cleaning operations
-        for operation in cleaning_operations:
-            op_type = operation['type']
-            op_params = operation.get('params', {})
-            
-            if op_type == 'text_normalization':
-                text_columns = op_params.get('columns', df.select_dtypes(include=['object']).columns)
-                for col in text_columns:
-                    if col in df.columns:
-                        df[col] = df[col].str.lower().str.strip()
-            
-            elif op_type == 'missing_values':
-                strategy = op_params.get('strategy', 'mean')
-                columns = op_params.get('columns', df.select_dtypes(include=np.number).columns)
-                imputer = SimpleImputer(strategy=strategy)
-                df[columns] = imputer.fit_transform(df[columns])
-            
-            elif op_type == 'outliers':
-                method = op_params.get('method', 'iqr')
-                columns = op_params.get('columns', df.select_dtypes(include=np.number).columns)
+        # Read and validate the file
+        try:
+            file_type = filename.rsplit('.', 1)[1].lower()
+            df = read_file_with_encoding(filepath, file_type)
                 
-                if method == 'iqr':
-                    for col in columns:
-                        Q1 = df[col].quantile(0.25)
-                        Q3 = df[col].quantile(0.75)
-                        IQR = Q3 - Q1
-                        lower_bound = Q1 - 1.5 * IQR
-                        upper_bound = Q3 + 1.5 * IQR
-                        df[col] = df[col].clip(lower=lower_bound, upper=upper_bound)
-            
-            elif op_type == 'duplicates':
-                subset = op_params.get('columns', None)
-                df = df.drop_duplicates(subset=subset)
-        
-        # Validate cleaned data if schema provided
-        if validation_schema:
-            validation_errors = validation_service.validate_dataframe(df, validation_schema)
-            if validation_errors:
-                return jsonify({
-                    'error': 'Cleaned data failed validation',
-                    'validation_errors': validation_errors
-                }), 400
-        
-        # Save cleaned data
-        output_params = data.get('output_params', {
-            'target_type': 'file',
-            'path': os.path.join(app.config['UPLOAD_FOLDER'], 'cleaned_data.csv')
-        })
-        
-        data_source.write_data(df, **output_params)
-        
-        return jsonify({
-            'message': 'Data cleaned successfully',
-            'rows': len(df),
-            'columns': list(df.columns)
-        })
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
-
-@app.route('/api/validate', methods=['POST'])
-def validate_data():
-    """Validate data from various sources."""
-    try:
-        data = request.get_json()
-        source_type = data.get('source_type', 'file')
-        source_params = data.get('source_params', {})
-        validation_schema = data.get('validation_schema')
-        
-        if not validation_schema:
-            return jsonify({'error': 'Validation schema is required'}), 400
-        
-        # For database tables, use database validator
-        if source_type == 'database':
-            db_name = source_params.get('db_name', 'default')
-            table_name = source_params.get('table_name')
-            schema = source_params.get('schema')
-            
-            validation_errors = validation_service.validate_database_table(
-                db_name, table_name, schema
-            )
-        else:
-            # For other sources, read into DataFrame and validate
-            df = data_source.read_data(source_type, **source_params)
-            validation_errors = validation_service.validate_dataframe(
-                df, validation_schema
-            )
-        
-        if validation_errors:
             return jsonify({
-                'valid': False,
-                'errors': validation_errors
+                'success': True,
+                'message': 'File uploaded successfully',
+                'filename': filename,
+                'original_filename': original_name,
+                'rows': len(df),
+                'columns': list(df.columns)
             })
-        
-        return jsonify({
-            'valid': True,
-            'message': 'Data validation successful'
-        })
+            
+        except Exception as e:
+            # Clean up invalid file
+            os.remove(filepath)
+            logger.error(f"Error processing file: {str(e)}")
+            return jsonify({'success': False, 'error': f'Error processing file: {str(e)}'}), 400
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        logger.error(f"Upload error: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/schemas', methods=['GET'])
-def list_schemas():
-    """List available validation schemas."""
-    try:
-        return jsonify({
-            'schemas': {
-                'employees': EMPLOYEE_SCHEMA,
-                'products': PRODUCT_SCHEMA
-            }
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
-
-@app.route('/api/datasets', methods=['GET'])
+@app.route('/datasets', methods=['GET'])
 def list_datasets():
     """List all available datasets."""
     try:
         files = []
         for filename in os.listdir(app.config['UPLOAD_FOLDER']):
             if allowed_file(filename):
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 files.append({
                     'name': filename,
-                    'size': os.path.getsize(file_path),
-                    'modified': os.path.getmtime(file_path)
+                    'size': os.path.getsize(filepath),
+                    'modified': os.path.getmtime(filepath)
                 })
         return jsonify({'success': True, 'datasets': files})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error listing datasets: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/datasets/<dataset_name>/preview', methods=['GET'])
-def preview_dataset(dataset_name):
-    """Preview the first few rows of a dataset."""
+@app.route('/datasets/<name>/preview', methods=['GET'])
+def preview_dataset(name):
+    """Preview the contents of a dataset."""
     try:
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(dataset_name))
-        if not os.path.exists(file_path):
-            return jsonify({'error': 'Dataset not found'}), 404
-
-        df = pd.read_csv(file_path) if dataset_name.endswith('.csv') else \
-             pd.read_excel(file_path) if dataset_name.endswith(('.xlsx', '.xls')) else \
-             pd.read_json(file_path) if dataset_name.endswith('.json') else \
-             pd.read_csv(file_path, sep='\t')
-
-        preview = df.head(10).to_dict('records')
-        return jsonify({
-            'success': True,
-            'preview': preview,
-            'total_rows': len(df),
-            'total_columns': len(df.columns),
-            'columns': df.columns.tolist()
-        })
+        logger.info(f"Received preview request for dataset: {name}")
+        
+        if not allowed_file(name):
+            logger.warning(f"Invalid file type for dataset: {name}")
+            return jsonify({
+                'success': False, 
+                'error': 'Invalid file type. Supported types: CSV, Excel, JSON, TXT'
+            }), 400
+            
+        # Find the actual file with timestamp
+        filename = find_timestamped_file(name)
+        if not filename:
+            logger.warning(f"Dataset not found: {name}")
+            return jsonify({
+                'success': False, 
+                'error': 'Dataset not found'
+            }), 404
+            
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if not os.path.exists(filepath):
+            logger.error(f"File exists in directory listing but not on disk: {filepath}")
+            return jsonify({
+                'success': False, 
+                'error': 'Dataset file is missing'
+            }), 404
+            
+        try:
+            file_type = name.rsplit('.', 1)[1].lower()
+            df = read_file_with_encoding(filepath, file_type)
+            
+            if df is None or df.empty:
+                logger.warning(f"Empty dataset: {filename}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Dataset is empty'
+                }), 400
+            
+            preview_rows = min(10, len(df))
+            preview_data = df.head(preview_rows).to_dict('records')
+            
+            # Convert any numpy types to Python native types for JSON serialization
+            for row in preview_data:
+                for key, value in row.items():
+                    if isinstance(value, (np.integer, np.floating)):
+                        row[key] = value.item()
+                    elif isinstance(value, (np.ndarray, list)):
+                        row[key] = str(value)
+                    elif pd.isna(value):
+                        row[key] = None
+            
+            return jsonify({
+                'success': True,
+                'preview': preview_data,
+                'columns': list(df.columns),
+                'total_rows': len(df),
+                'filename': filename
+            })
+            
+        except Exception as e:
+            logger.error(f"Error reading file {filename}: {str(e)}")
+            return jsonify({
+                'success': False, 
+                'error': f'Error reading file: {str(e)}'
+            }), 400
+            
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error previewing dataset: {str(e)}")
+        return jsonify({
+            'success': False, 
+            'error': 'Internal server error occurred while previewing dataset'
+        }), 500
 
-@app.route('/api/datasets/<dataset_name>/download', methods=['GET'])
-def download_dataset(dataset_name):
+@app.route('/datasets/<name>/download', methods=['GET'])
+def download_dataset(name):
     """Download a dataset."""
     try:
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(dataset_name))
-        if not os.path.exists(file_path):
-            return jsonify({'error': 'Dataset not found'}), 404
+        if not allowed_file(name):
+            return jsonify({'success': False, 'error': 'Invalid file type'}), 400
             
-        return send_file(file_path, as_attachment=True)
+        filename = find_timestamped_file(name)
+        if not filename:
+            return jsonify({'success': False, 'error': 'Dataset not found'}), 404
+            
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        return send_file(filepath, as_attachment=True, download_name=name)
+        
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error downloading dataset: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/datasets/<dataset_name>', methods=['DELETE'])
-def delete_dataset(dataset_name):
+@app.route('/datasets/<name>', methods=['DELETE'])
+def delete_dataset(name):
     """Delete a dataset."""
     try:
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(dataset_name))
-        if not os.path.exists(file_path):
-            return jsonify({'error': 'Dataset not found'}), 404
+        if not allowed_file(name):
+            return jsonify({'success': False, 'error': 'Invalid file type'}), 400
             
-        os.remove(file_path)
-        return jsonify({'success': True, 'message': f'Dataset {dataset_name} deleted successfully'})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/tables', methods=['GET'])
-def list_tables():
-    """List available database tables."""
-    try:
-        db_name = request.args.get('db_name', 'default')
-        if db_name not in data_source.db_connections:
-            return jsonify({'error': f'Database {db_name} not registered'}), 400
+        filename = find_timestamped_file(name)
+        if not filename:
+            return jsonify({'success': False, 'error': 'Dataset not found'}), 404
             
-        engine = data_source.db_connections[db_name]
-        inspector = inspect(engine)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        os.remove(filepath)
+        return jsonify({'success': True, 'message': 'Dataset deleted successfully'})
         
-        tables = []
-        for schema in inspector.get_schema_names():
-            for table in inspector.get_table_names(schema=schema):
-                tables.append({
-                    'schema': schema,
-                    'table': table,
-                    'columns': [
-                        {'name': col['name'], 'type': str(col['type'])}
-                        for col in inspector.get_columns(table, schema=schema)
-                    ]
-                })
-        
-        return jsonify({'tables': tables})
-    
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        logger.error(f"Error deleting dataset: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/preview', methods=['POST'])
-def preview_data():
-    """Preview data from various sources."""
+def convert_to_native_types(obj):
+    """Convert numpy types to native Python types for JSON serialization."""
+    if isinstance(obj, dict):
+        return {key: convert_to_native_types(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_to_native_types(item) for item in obj]
+    elif isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64)):
+        return int(obj)
+    elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+@app.route('/clean', methods=['POST'])
+def clean_data():
+    """Clean a dataset with specified operations."""
     try:
         data = request.get_json()
-        source_type = data.get('source_type', 'file')
-        source_params = data.get('source_params', {})
+        logger.info(f"Received cleaning request: {data}")
         
-        # Read sample of data
-        if source_type == 'database':
-            source_params['query'] = f"SELECT * FROM {source_params.get('table_name')} LIMIT 5"
-            source_type = 'query'
+        if not data or 'filename' not in data:
+            return jsonify({'success': False, 'error': 'No filename provided'}), 400
             
-        df = data_source.read_data(source_type, **source_params)
-        preview = df.head().to_dict(orient='records')
+        filename = find_timestamped_file(data['filename'])
+        if not filename:
+            return jsonify({'success': False, 'error': 'Dataset not found'}), 404
+            
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         
-        return jsonify({
-            'preview': preview,
-            'total_rows': len(df),
-            'columns': list(df.columns)
-        })
-    
+        # Read the dataset
+        try:
+            file_type = filename.rsplit('.', 1)[1].lower()
+            df = read_file_with_encoding(filepath, file_type)
+        except Exception as e:
+            logger.error(f"Error reading file {filename}: {str(e)}")
+            return jsonify({'success': False, 'error': f'Error reading file: {str(e)}'}), 400
+            
+        # Extract operations from the request
+        ops = data.get('operations', {})
+        logger.info(f"Operations received: {ops}")
+        
+        # Initialize statistics
+        initial_rows = int(len(df))
+        initial_stats = {
+            'rows': initial_rows,
+            'missing_values': int(df.isna().sum().sum()),
+            'duplicates': int(len(df) - len(df.drop_duplicates()))
+        }
+        
+        changes = {
+            'missing_values_handled': 0,
+            'duplicates_removed': 0,
+            'rows_removed': 0
+        }
+        
+        # Track applied operations for reporting
+        applied_operations = []
+        
+        # Text normalization
+        if isinstance(ops, dict) and (ops.get('normalizeText') or ops.get('normalize_text')):
+            logger.info("Applying text normalization")
+            # Get selected text columns or use all text columns
+            text_columns = ops.get('selectedColumns', {}).get('textColumns', [])
+            if not text_columns:
+                text_columns = df.select_dtypes(include=['object']).columns
+            
+            for col in text_columns:
+                if col in df.columns:
+                    df[col] = df[col].str.lower().str.strip()
+            applied_operations.append('text_normalization')
+        
+        # Missing values
+        if isinstance(ops, dict):
+            missing_values_strategy = ops.get('handleMissingValues') or ops.get('handle_missing_values')
+            if missing_values_strategy and missing_values_strategy != 'none':
+                logger.info(f"Handling missing values with strategy: {missing_values_strategy}")
+                
+                # Count missing values before handling
+                missing_before = int(df.isna().sum().sum())
+                
+                # Get selected numeric columns or use all numeric columns
+                numeric_columns = ops.get('selectedColumns', {}).get('numericColumns', [])
+                if not numeric_columns:
+                    numeric_columns = df.select_dtypes(include=np.number).columns
+                
+                if missing_values_strategy == 'impute':
+                    imputer = SimpleImputer(strategy='mean')
+                    df[numeric_columns] = imputer.fit_transform(df[numeric_columns])
+                elif missing_values_strategy == 'custom':
+                    custom_value = ops.get('customMissingValue', '')
+                    try:
+                        # Try to convert custom value to float for numeric columns
+                        custom_value = float(custom_value)
+                        df[numeric_columns] = df[numeric_columns].fillna(custom_value)
+                    except (ValueError, TypeError):
+                        # If conversion fails, treat it as a string value
+                        logger.warning(f"Could not convert custom value '{custom_value}' to float, using as string")
+                        df = df.fillna(custom_value)
+                elif missing_values_strategy == 'remove':
+                    df = df.dropna(subset=numeric_columns)
+                
+                # Count handled missing values
+                missing_after = int(df.isna().sum().sum())
+                changes['missing_values_handled'] = missing_before - missing_after
+                applied_operations.append('missing_values')
+        
+        # Outliers
+        if isinstance(ops, dict) and (ops.get('detectOutliers') or ops.get('detect_outliers')):
+            logger.info("Detecting and handling outliers")
+            
+            # Get selected outlier columns or use all numeric columns
+            outlier_columns = ops.get('selectedColumns', {}).get('outlierColumns', [])
+            if not outlier_columns:
+                outlier_columns = df.select_dtypes(include=np.number).columns
+            
+            for col in outlier_columns:
+                if col in df.columns:
+                    Q1 = float(df[col].quantile(0.25))
+                    Q3 = float(df[col].quantile(0.75))
+                    IQR = Q3 - Q1
+                    lower_bound = Q1 - 1.5 * IQR
+                    upper_bound = Q3 + 1.5 * IQR
+                    df[col] = df[col].clip(lower=lower_bound, upper=upper_bound)
+            applied_operations.append('outliers')
+        
+        # Duplicates
+        if isinstance(ops, dict) and (ops.get('removeDuplicates') or ops.get('remove_duplicates')):
+            logger.info("Removing duplicates")
+            
+            # Count duplicates before removal
+            duplicates_before = int(len(df))
+            
+            # Get selected duplicate check columns or use all columns
+            duplicate_columns = ops.get('selectedColumns', {}).get('duplicateCheckColumns', [])
+            if duplicate_columns:
+                df = df.drop_duplicates(subset=duplicate_columns)
+            else:
+                df = df.drop_duplicates()
+            
+            # Count removed duplicates
+            duplicates_removed = duplicates_before - int(len(df))
+            changes['duplicates_removed'] = duplicates_removed
+            applied_operations.append('duplicates')
+        
+        # Calculate final statistics
+        final_rows = int(len(df))
+        changes['rows_removed'] = initial_rows - final_rows
+        
+        final_stats = {
+            'rows': final_rows,
+            'missing_values': int(df.isna().sum().sum()),
+            'duplicates': int(len(df) - len(df.drop_duplicates()))
+        }
+        
+        # Save cleaned dataset
+        cleaned_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'cleaned')
+        if not os.path.exists(cleaned_dir):
+            os.makedirs(cleaned_dir)
+            
+        base_name = os.path.splitext(filename)[0]
+        extension = os.path.splitext(filename)[1]
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        cleaned_filename = f"{base_name}_cleaned_{timestamp}{extension}"
+        cleaned_filepath = os.path.join(app.config['UPLOAD_FOLDER'], cleaned_filename)
+        
+        if extension.lower() == '.csv':
+            df.to_csv(cleaned_filepath, index=False)
+        elif extension.lower() in ('.xls', '.xlsx'):
+            df.to_excel(cleaned_filepath, index=False)
+        elif extension.lower() == '.json':
+            df.to_json(cleaned_filepath)
+        else:  # .txt
+            df.to_csv(cleaned_filepath, sep='\t', index=False)
+            
+        response_data = {
+            'success': True,
+            'message': 'Dataset cleaned successfully',
+            'cleaned_dataset_name': cleaned_filename,
+            'report': {
+                'initial_stats': initial_stats,
+                'final_stats': final_stats,
+                'changes': changes,
+                'operations_applied': applied_operations
+            }
+        }
+        
+        # Convert numpy types to native Python types
+        response_data = convert_to_native_types(response_data)
+        return jsonify(response_data)
+        
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        logger.error(f"Error cleaning dataset: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-# Initialize database connections
-try:
-    # DB2 connection
-    db2_adapter = DB2Adapter(DB2Config())
-    db2_adapter.connect()
-    logger.info("Successfully connected to DB2")
+def find_timestamped_file(base_filename):
+    """Find the most recent timestamped version of a file."""
+    logger.info(f"Looking for file: {base_filename}")
+    base_name, ext = os.path.splitext(secure_filename(base_filename))
+    logger.info(f"Base name: {base_name}, Extension: {ext}")
+    
+    # Get all files in the upload directory
+    all_files = os.listdir(app.config['UPLOAD_FOLDER'])
+    logger.info(f"All files in upload directory: {all_files}")
+    
+    # Check if the exact file exists
+    exact_match = secure_filename(base_filename)
+    logger.info(f"Secure filename: {exact_match}")
+    
+    if exact_match in all_files:
+        logger.info(f"Found exact match for {base_filename}: {exact_match}")
+        return exact_match
+    
+    # Look for timestamped versions
+    matching_files = [f for f in all_files 
+                     if f.startswith(base_name + '_') and f.endswith(ext)]
+    logger.info(f"Timestamped matches: {matching_files}")
+    
+    # Also look for files that match the base name without timestamp
+    base_matches = [f for f in all_files 
+                   if f.startswith(base_name) and f.endswith(ext) and '_' not in f]
+    logger.info(f"Base matches: {base_matches}")
+    
+    # Combine both lists
+    all_matches = matching_files + base_matches
+    logger.info(f"All matches: {all_matches}")
+    
+    if not all_matches:
+        logger.warning(f"No matching files found for {base_filename}")
+        return None
+    
+    # Get the most recent file if multiple matches exist
+    # For simplicity, we'll use alphabetical sorting which works for timestamps in YYYYMMDD format
+    latest_file = sorted(all_matches)[-1]
+    logger.info(f"Found match for {base_filename}: {latest_file}")
+    return latest_file
 
-    # SQL Server connection
-    sql_adapter = SQLServerAdapter(SQLServerConfig())
-    sql_adapter.connect()
-    logger.info("Successfully connected to SQL Server")
-
-    # Redis connection
-    redis_adapter = RedisAdapter(RedisConfig())
-    redis_adapter.connect()
-    logger.info("Successfully connected to Redis")
-
-except Exception as e:
-    logger.error(f"Error initializing database connections: {str(e)}")
-    raise
-
-# Register blueprints
-app.register_blueprint(chat_bp, url_prefix='/api/chat')
+def read_file_with_encoding(filepath, file_type='csv'):
+    """Read file with different encodings if UTF-8 fails."""
+    logger.info(f"Reading file: {filepath} of type: {file_type}")
+    
+    # Try these encodings in order - adding UTF-16 encodings
+    encodings = ['utf-8', 'utf-16', 'utf-16le', 'utf-16be', 'latin1', 'iso-8859-1', 'cp1252']
+    
+    # For CSV files, try with and without BOM detection
+    if file_type == 'csv':
+        try:
+            # First try with utf-8-sig to handle BOM characters
+            logger.info(f"Trying to read CSV with utf-8-sig encoding to handle BOM")
+            df = pd.read_csv(filepath, encoding='utf-8-sig')
+            if not df.empty and len(df.columns) > 0:
+                logger.info(f"Successfully read file with utf-8-sig encoding")
+                return df
+        except Exception as e:
+            logger.debug(f"Failed to read with utf-8-sig encoding: {str(e)}")
+    
+    last_error = None
+    for encoding in encodings:
+        try:
+            if file_type == 'csv':
+                # Try with different CSV parser settings
+                for sep in [',', ';', '\t', '|']:
+                    try:
+                        logger.info(f"Trying to read CSV with encoding: {encoding}, separator: {sep}")
+                        df = pd.read_csv(filepath, encoding=encoding, sep=sep)
+                        # Validate that we have meaningful data
+                        if len(df.columns) > 1 or (len(df.columns) == 1 and len(df) > 0):
+                            # Check if the columns look reasonable (not starting with BOM characters)
+                            if not any(col.startswith('ÿþ') or col.startswith('þÿ') for col in df.columns):
+                                logger.info(f"Successfully read CSV with encoding: {encoding}, separator: {sep}")
+                                return df
+                            else:
+                                logger.warning(f"Found BOM characters in column names with {encoding}, trying next encoding")
+                    except Exception as e:
+                        logger.debug(f"Failed with encoding {encoding}, separator {sep}: {str(e)}")
+                        continue
+            elif file_type in ['xls', 'xlsx']:
+                df = pd.read_excel(filepath)
+                logger.info(f"Successfully read Excel file")
+                return df
+            elif file_type == 'json':
+                df = pd.read_json(filepath, encoding=encoding)
+                logger.info(f"Successfully read JSON with encoding: {encoding}")
+                return df
+            elif file_type == 'txt':
+                # Try different delimiters for txt files
+                for delimiter in ['\t', ',', ';', '|']:
+                    try:
+                        df = pd.read_csv(filepath, encoding=encoding, sep=delimiter)
+                        if len(df.columns) > 1:  # Found a valid delimiter
+                            logger.info(f"Successfully read TXT with encoding: {encoding}, delimiter: {delimiter}")
+                            return df
+                    except Exception as e:
+                        logger.debug(f"Failed with encoding {encoding}, delimiter {delimiter}: {str(e)}")
+                        continue
+            else:
+                raise ValueError(f"Unsupported file type: {file_type}")
+        except Exception as e:
+            last_error = str(e)
+            logger.debug(f"Failed to read with encoding {encoding}: {str(e)}")
+            continue
+    
+    # If we get here, all encodings failed
+    error_msg = f"Failed to read file with any encoding. Last error: {last_error}"
+    logger.error(error_msg)
+    raise ValueError(error_msg)
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(host='127.0.0.1', port=5000)

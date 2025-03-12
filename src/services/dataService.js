@@ -3,173 +3,145 @@
  */
 import axios from 'axios';
 
-const API_BASE_URL = '/api';
-
-// Configure axios defaults
-axios.defaults.baseURL = API_BASE_URL;
+// Configure axios defaults based on backend API configuration
+axios.defaults.baseURL = 'http://127.0.0.1:5000';
 axios.defaults.headers.common['Accept'] = 'application/json';
+axios.defaults.timeout = 30000; // 30 seconds timeout
 
-// Mock data for development when API is unavailable
-const MOCK_DATASETS = [
-  {
-    name: 'sample_dataset.csv',
-    file_type: 'csv',
-    storage_type: 'file',
-    size: 1024,
-    rows: 100,
-    columns: 5,
-    modified: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    metadata: {
-      storage_info: {
-        primary: 'file',
-        fallback: 'db2'
-      },
-      cache_status: 'active'
-    }
-  }
-];
+// Add response interceptor for error handling and retries
+let retryCount = 0;
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000;
 
-// Add response interceptor for error handling
 axios.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    // Log the error for debugging
-    console.error('API Error:', error.message);
-
-    // If the API is down, return mock data for development
-    if (error.code === 'ECONNREFUSED' || error.message.includes('Network Error')) {
-      if (error.config.url.includes('/datasets')) {
-        return Promise.resolve({ 
-          data: { 
-            success: true, 
-            datasets: MOCK_DATASETS 
-          } 
-        });
-      }
+  (response) => {
+    retryCount = 0; // Reset retry count on successful response
+    return response;
+  },
+  async (error) => {
+    if (!error.response && retryCount < MAX_RETRIES) {
+      retryCount++;
+      console.log(`Retrying request (${retryCount}/${MAX_RETRIES})...`);
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+      return axios(error.config);
     }
-
+    retryCount = 0; // Reset retry count after max retries or if we have a response
     return Promise.reject(error);
   }
 );
 
-export const uploadDataset = async (file, datasetName = null, fileType = null) => {
+export const uploadDataset = async (file) => {
   try {
+    // Validate file size (16MB limit)
+    const MAX_FILE_SIZE = 16 * 1024 * 1024;
+    if (file.size > MAX_FILE_SIZE) {
+      throw new Error(`File size exceeds maximum allowed size of 16MB`);
+    }
+
+    // Validate file type
+    const allowedTypes = [
+      'text/csv',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/json',
+      'text/plain'
+    ];
+    
+    if (!allowedTypes.includes(file.type)) {
+      throw new Error(`File type ${file.type} not allowed. Supported formats: CSV, Excel, JSON, TXT`);
+    }
+
     const formData = new FormData();
     formData.append('file', file);
     
-    if (datasetName) {
-      formData.append('dataset_name', datasetName);
-    }
-    
-    if (fileType) {
-      formData.append('file_type', fileType);
-    }
-    
-    const response = await axios.post('/data/upload', formData, {
+    const response = await axios.post('/datasets', formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
       }
     });
     
+    if (!response.data || !response.data.success) {
+      throw new Error(response.data?.error || 'Failed to upload dataset');
+    }
+    
     return response.data;
   } catch (error) {
-    console.error('Error uploading dataset:', error.message);
-    throw new Error('Failed to upload dataset. Please try again.');
+    console.error('Error uploading dataset:', error);
+    throw new Error(error.response?.data?.error || error.message || 'Failed to upload dataset');
   }
 };
 
-export const cleanDataset = async (datasetName, options = {}, storageType = 'hybrid', version = null, saveResult = true, resultName = null) => {
+export const listDatasets = async () => {
   try {
-    const payload = {
-      dataset_name: datasetName,
-      options,
-      storage_type: storageType,
-      save_result: saveResult,
-      storage_config: {
-        primary: storageType,
-        fallback: storageType === 'file' ? 'db2' : 'file'
-      }
-    };
+    console.log('Fetching datasets list...'); // Debug log
+    const response = await axios.get('/datasets');
+    console.log('List datasets response:', response.data); // Debug log
     
-    if (version) payload.version = version;
-    if (resultName) payload.result_name = resultName;
+    if (!response.data || !response.data.success) {
+      throw new Error(response.data?.error || 'Failed to fetch datasets');
+    }
     
-    const response = await axios.post('/data/clean', payload);
-    return response.data;
-  } catch (error) {
-    console.error('Error cleaning dataset:', error.message);
-    throw new Error('Failed to clean dataset. Please try again.');
-  }
-};
-
-export const listDatasets = async (storageType = 'all', useCache = true) => {
-  try {
-    const response = await axios.get('/data/datasets', {
-      params: { 
-        storage_type: storageType,
-        use_cache: useCache 
-      }
-    });
-    return response.data;
-  } catch (error) {
-    console.error('Error listing datasets:', error.message);
+    if (!Array.isArray(response.data.datasets)) {
+      throw new Error('Invalid response format: datasets not an array');
+    }
+    
     return {
       success: true,
-      datasets: MOCK_DATASETS
+      datasets: response.data.datasets.map(dataset => ({
+        name: dataset.name || '',
+        size: dataset.size || 0,
+        modified: dataset.modified || Date.now() / 1000,
+        type: dataset.type || 'unknown'
+      }))
     };
+  } catch (error) {
+    console.error('Error listing datasets:', error);
+    throw new Error(error.response?.data?.error || error.message || 'Failed to list datasets');
   }
 };
 
-export const getDatasetInfo = async (datasetName, storageType = 'file', version = null) => {
+export const previewDataset = async (name) => {
   try {
-    const params = { storage_type: storageType };
-    if (version) params.version = version;
+    if (!name) {
+      throw new Error('Dataset name is required');
+    }
     
-    const response = await axios.get(`/data/datasets/${datasetName}`, { params });
+    // URL encode the dataset name to handle special characters
+    const encodedName = encodeURIComponent(name);
+    console.log('Requesting preview for dataset:', name, 'encoded as:', encodedName); // Debug log
+    
+    const response = await axios.get(`/datasets/${encodedName}/preview`);
+    console.log('Preview response:', response); // Debug log
+    
+    if (!response.data) {
+      throw new Error('No response data received');
+    }
+    
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to preview dataset');
+    }
+    
     return response.data;
   } catch (error) {
-    console.error('Error getting dataset info:', error.message);
-    throw new Error('Failed to fetch dataset information.');
+    console.error('Error previewing dataset:', error);
+    if (error.response?.status === 404) {
+      throw new Error('Dataset not found');
+    }
+    throw new Error(error.response?.data?.error || error.message || 'Failed to preview dataset');
   }
 };
 
-export const previewDataset = async (datasetName, storageType = 'file', version = null, rows = 10) => {
+export const downloadDataset = async (name) => {
   try {
-    const params = { 
-      storage_type: storageType,
-      rows
-    };
-    if (version) params.version = version;
+    if (!name) {
+      throw new Error('Dataset name is required');
+    }
     
-    const response = await axios.get(`/data/datasets/${datasetName}/preview`, { params });
-    return response.data;
-  } catch (error) {
-    console.error('Error previewing dataset:', error.message);
-    // Return mock preview data
-    return {
-      success: true,
-      preview: Array(rows).fill({
-        column1: 'Sample Data',
-        column2: 123,
-        column3: new Date().toISOString()
-      }),
-      columns: ['column1', 'column2', 'column3'],
-      total_rows: 100
-    };
-  }
-};
-
-export const downloadDataset = async (datasetName, format = 'csv', storageType = 'file', version = null) => {
-  try {
-    const params = { 
-      format,
-      storage_type: storageType
-    };
-    if (version) params.version = version;
+    // URL encode the dataset name to handle special characters
+    const encodedName = encodeURIComponent(name);
+    console.log('Downloading dataset:', name, 'encoded as:', encodedName); // Debug log
     
-    const response = await axios.get(`/data/datasets/${datasetName}/download`, { 
-      params,
+    const response = await axios.get(`/datasets/${encodedName}/download`, {
       responseType: 'blob'
     });
     
@@ -177,28 +149,75 @@ export const downloadDataset = async (datasetName, format = 'csv', storageType =
     const url = window.URL.createObjectURL(new Blob([response.data]));
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `${datasetName}.${format}`);
+    link.setAttribute('download', name);
     document.body.appendChild(link);
     link.click();
     link.remove();
     window.URL.revokeObjectURL(url);
     
-    return true;
+    return { success: true };
   } catch (error) {
-    console.error('Error downloading dataset:', error.message);
-    throw new Error('Failed to download dataset.');
+    console.error('Error downloading dataset:', error);
+    if (error.response?.status === 404) {
+      throw new Error('Dataset not found');
+    }
+    throw new Error(error.response?.data?.error || error.message || 'Failed to download dataset');
   }
 };
 
-export const deleteDataset = async (datasetName, storageType = 'file', version = null) => {
+export const deleteDataset = async (name) => {
   try {
-    const params = { storage_type: storageType };
-    if (version) params.version = version;
+    if (!name) {
+      throw new Error('Dataset name is required');
+    }
     
-    const response = await axios.delete(`/data/datasets/${datasetName}`, { params });
+    // URL encode the dataset name to handle special characters
+    const encodedName = encodeURIComponent(name);
+    console.log('Deleting dataset:', name, 'encoded as:', encodedName); // Debug log
+    
+    const response = await axios.delete(`/datasets/${encodedName}`);
+    console.log('Delete response:', response.data); // Debug log
+    
+    if (!response.data || !response.data.success) {
+      throw new Error(response.data?.error || 'Failed to delete dataset');
+    }
+    
     return response.data;
   } catch (error) {
-    console.error('Error deleting dataset:', error.message);
-    throw new Error('Failed to delete dataset.');
+    console.error('Error deleting dataset:', error);
+    if (error.response?.status === 404) {
+      throw new Error('Dataset not found');
+    }
+    throw new Error(error.response?.data?.error || error.message || 'Failed to delete dataset');
+  }
+};
+
+export const cleanDataset = async (filename, operations = {}) => {
+  try {
+    if (!filename) {
+      throw new Error('Dataset filename is required');
+    }
+    
+    console.log('Cleaning dataset:', filename, 'with operations:', operations); // Debug log
+    const response = await axios.post('/clean', {
+      filename,
+      operations
+    });
+    console.log('Clean response:', response.data); // Debug log
+    
+    if (!response.data || !response.data.success) {
+      throw new Error(response.data?.error || 'Failed to clean dataset');
+    }
+    
+    return response.data;
+  } catch (error) {
+    console.error('Error cleaning dataset:', error);
+    if (error.response?.status === 404) {
+      throw new Error('Dataset not found');
+    }
+    if (error.response?.status === 400) {
+      throw new Error(error.response.data?.error || 'Invalid cleaning operations');
+    }
+    throw new Error(error.response?.data?.error || error.message || 'Failed to clean dataset');
   }
 };

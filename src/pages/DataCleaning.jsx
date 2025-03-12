@@ -14,13 +14,7 @@ const DataCleaning = () => {
   const [activeTab, setActiveTab] = useState('upload');
   const [selectedDataset, setSelectedDataset] = useState(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [cleaningOptions, setCleaningOptions] = useState({
-    removeDuplicates: true,
-    handleMissingValues: 'impute',
-    normalizeText: true,
-    detectOutliers: true,
-    fixTypos: false,
-  });
+  const [cleaningOptions, setCleaningOptions] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingError, setProcessingError] = useState(null);
   const [cleaningResults, setCleaningResults] = useState(null);
@@ -35,6 +29,8 @@ const DataCleaning = () => {
 
   const handleSelectDataset = (dataset) => {
     setSelectedDataset(dataset);
+    setCleaningOptions(null); // Reset options when new dataset selected
+    setCleaningResults(null);
     if (dataset) {
       setActiveTab('analyze');
     }
@@ -42,7 +38,8 @@ const DataCleaning = () => {
 
   const handleApplyOptions = (options) => {
     setCleaningOptions(options);
-    setActiveTab('clean');
+    setActiveTab('clean'); // Ensure we switch to clean tab
+    setCleaningResults(null);
   };
 
   const handleCleanData = async () => {
@@ -125,8 +122,9 @@ const DataCleaning = () => {
           
           {activeTab !== 'upload' && (
             <DataCleaningOptions 
-              onApplyOptions={handleApplyOptions}
-              initialOptions={cleaningOptions}
+              onApplyOptions={handleApplyOptions} 
+              initialOptions={cleaningOptions} 
+              selectedDataset={selectedDataset}
               disabled={isProcessing}
             />
           )}
