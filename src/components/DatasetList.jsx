@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Database, FileText, Trash2, Download, ExternalLink, RefreshCw, HardDrive, Cloud } from 'lucide-react';
+import { Database, FileText, Trash2, Download, RefreshCw } from 'lucide-react';
 import { listDatasets, deleteDataset, downloadDataset } from '../services/dataService';
 
 const DatasetList = ({ onSelectDataset, refreshTrigger }) => {
@@ -8,7 +8,6 @@ const DatasetList = ({ onSelectDataset, refreshTrigger }) => {
   const [error, setError] = useState(null);
   const [selectedDatasetId, setSelectedDatasetId] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [deleteId, setDeleteId] = useState(null);
 
   useEffect(() => {
     fetchDatasets();
@@ -20,19 +19,40 @@ const DatasetList = ({ onSelectDataset, refreshTrigger }) => {
     
     try {
       const response = await listDatasets();
-      if (response.success) {
-        setDatasets(response.datasets);
-      } else {
-        setError('Failed to fetch datasets');
+      console.log('Datasets response:', response); // Debug log
+      
+      if (!response || !response.success) {
+        throw new Error(response?.error || 'Failed to fetch datasets');
       }
+      
+      if (!Array.isArray(response.datasets)) {
+        throw new Error('Invalid datasets format from server');
+      }
+      
+      // Ensure each dataset has required properties
+      const validDatasets = response.datasets.map(dataset => ({
+        name: dataset.name || '',
+        size: dataset.size || 0,
+        modified: dataset.modified || Date.now() / 1000,
+        type: dataset.type || 'unknown'
+      }));
+      
+      setDatasets(validDatasets);
     } catch (err) {
+      console.error('Error fetching datasets:', err);
       setError('Error loading datasets: ' + (err.message || 'Unknown error'));
+      setDatasets([]);
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleSelectDataset = (dataset) => {
+    if (!dataset || !dataset.name) {
+      console.warn('Attempted to select invalid dataset:', dataset);
+      return;
+    }
+    
     setSelectedDatasetId(dataset.name);
     if (onSelectDataset) {
       onSelectDataset(dataset);
@@ -42,89 +62,69 @@ const DatasetList = ({ onSelectDataset, refreshTrigger }) => {
   const handleDeleteDataset = async (datasetName, e) => {
     e.stopPropagation();
     
+    if (!datasetName) {
+      console.warn('Attempted to delete dataset with no name');
+      return;
+    }
+    
     if (window.confirm(`Are you sure you want to delete dataset "${datasetName}"?`)) {
       setIsDeleting(true);
-      setDeleteId(datasetName);
       
       try {
         const response = await deleteDataset(datasetName);
-        if (response.success) {
-          setDatasets(datasets.filter(d => d.name !== datasetName));
-          if (selectedDatasetId === datasetName) {
-            setSelectedDatasetId(null);
-            if (onSelectDataset) {
-              onSelectDataset(null);
-            }
+        if (!response || !response.success) {
+          throw new Error(response?.error || 'Failed to delete dataset');
+        }
+        
+        setDatasets(datasets.filter(d => d.name !== datasetName));
+        
+        if (selectedDatasetId === datasetName) {
+          setSelectedDatasetId(null);
+          if (onSelectDataset) {
+            onSelectDataset(null);
           }
-        } else {
-          setError(`Failed to delete dataset: ${response.message || 'Unknown error'}`);
         }
       } catch (err) {
         setError('Error deleting dataset: ' + (err.message || 'Unknown error'));
       } finally {
         setIsDeleting(false);
-        setDeleteId(null);
       }
     }
   };
 
-  const handleDownloadDataset = async (datasetName, format, e) => {
+  const handleDownloadDataset = async (datasetName, e) => {
     e.stopPropagation();
     
+    if (!datasetName) {
+      console.warn('Attempted to download dataset with no name');
+      return;
+    }
+    
     try {
-      await downloadDataset(datasetName, format);
+      const response = await downloadDataset(datasetName);
+      if (!response || !response.success) {
+        throw new Error(response?.error || 'Failed to download dataset');
+      }
     } catch (err) {
       setError('Error downloading dataset: ' + (err.message || 'Unknown error'));
     }
   };
 
-  const getFileIcon = (fileType) => {
-    switch (fileType) {
+  const getFileIcon = (filename) => {
+    if (!filename) return <Database className="h-5 w-5 text-gray-500" />;
+    
+    const extension = filename.split('.').pop().toLowerCase();
+    switch (extension) {
       case 'csv':
         return <FileText className="h-5 w-5 text-green-500" />;
       case 'json':
         return <FileText className="h-5 w-5 text-yellow-500" />;
-      case 'excel':
       case 'xlsx':
       case 'xls':
         return <FileText className="h-5 w-5 text-blue-500" />;
       default:
         return <Database className="h-5 w-5 text-gray-500" />;
     }
-  };
-
-  const getStorageIcon = (storageType, metadata) => {
-    switch (storageType) {
-      case 'hybrid':
-        return (
-          <div className="flex items-center" title="Hybrid Storage (File + DB2)">
-            <FileText className="h-4 w-4 text-purple-500" />
-            <Database className="h-4 w-4 text-purple-500 -ml-1" />
-          </div>
-        );
-      case 'db2':
-        return <Database className="h-4 w-4 text-blue-500" title="DB2 Storage" />;
-      case 'file':
-        return <HardDrive className="h-4 w-4 text-green-500" title="File Storage" />;
-      default:
-        return <Database className="h-4 w-4 text-gray-500" title="Unknown Storage Type" />;
-    }
-  };
-
-  const getCacheStatus = (metadata) => {
-    if (!metadata?.cache_status) return null;
-    
-    return (
-      <span 
-        className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-          metadata.cache_status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-        }`}
-        title={`Cache Status: ${metadata.cache_status}`}
-      >
-        <Cloud className="h-3 w-3 mr-1" />
-        {metadata.cache_status === 'active' ? 'Cached' : 'Not Cached'}
-      </span>
-    );
   };
 
   if (isLoading && datasets.length === 0) {
@@ -135,8 +135,9 @@ const DatasetList = ({ onSelectDataset, refreshTrigger }) => {
           <button 
             onClick={fetchDatasets}
             className="text-blue-600 text-sm hover:underline flex items-center"
+            disabled={isLoading}
           >
-            <RefreshCw className="h-4 w-4 mr-1" />
+            <RefreshCw className={`h-4 w-4 mr-1 ${isLoading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
         </div>
@@ -180,51 +181,41 @@ const DatasetList = ({ onSelectDataset, refreshTrigger }) => {
             {datasets.map((dataset) => (
               <li 
                 key={dataset.name}
-                className={`hover:bg-gray-50 cursor-pointer transition-colors ${selectedDatasetId === dataset.name ? 'bg-blue-50' : ''}`}
+                className={`hover:bg-gray-50 cursor-pointer transition-colors ${
+                  selectedDatasetId === dataset.name ? 'bg-blue-50' : ''
+                }`}
                 onClick={() => handleSelectDataset(dataset)}
               >
                 <div className="px-4 py-3 flex items-center justify-between">
                   <div className="flex items-center min-w-0">
                     <div className="flex-shrink-0">
-                      {getFileIcon(dataset.file_type)}
+                      {getFileIcon(dataset.name)}
                     </div>
                     <div className="ml-3 flex-1 min-w-0">
-                      <div className="flex items-center space-x-2">
-                        <p className="text-sm font-medium text-gray-900 truncate">{dataset.name}</p>
-                        {getStorageIcon(dataset.storage_type, dataset.metadata)}
-                        {getCacheStatus(dataset.metadata)}
-                      </div>
-                      <div className="flex items-center text-xs text-gray-500">
-                        <span className="truncate">
-                          {dataset.rows} rows • {dataset.columns} columns • {dataset.file_type}
-                        </span>
-                        {dataset.updated_at && (
-                          <span className="ml-1 truncate">
-                            • Updated {new Date(dataset.updated_at).toLocaleDateString()}
-                          </span>
-                        )}
-                      </div>
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {dataset.name}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {(dataset.size / 1024).toFixed(2)} KB • Last modified: {new Date(dataset.modified * 1000).toLocaleString()}
+                      </p>
                     </div>
                   </div>
                   <div className="flex items-center space-x-2">
                     <button
-                      onClick={(e) => handleDownloadDataset(dataset.name, dataset.file_type, e)}
-                      className="p-1 text-gray-500 hover:text-blue-600 rounded-full hover:bg-blue-50"
+                      onClick={(e) => handleDownloadDataset(dataset.name, e)}
+                      className="p-1 text-gray-500 hover:text-gray-700 transition-colors"
                       title="Download dataset"
+                      disabled={!dataset.name || isDeleting}
                     >
                       <Download className="h-4 w-4" />
                     </button>
                     <button
                       onClick={(e) => handleDeleteDataset(dataset.name, e)}
-                      className="p-1 text-gray-500 hover:text-red-600 rounded-full hover:bg-red-50"
+                      className="p-1 text-gray-500 hover:text-red-600 transition-colors"
                       title="Delete dataset"
-                      disabled={isDeleting && deleteId === dataset.name}
+                      disabled={!dataset.name || isDeleting}
                     >
-                      {isDeleting && deleteId === dataset.name ? (
-                        <RefreshCw className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
+                      <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
                 </div>
